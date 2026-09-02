@@ -1,0 +1,154 @@
+name: Build PS3 Port Test
+
+on:
+  workflow_dispatch:
+
+  push:
+    branches:
+      - main
+      - master
+
+
+jobs:
+
+  build:
+
+    runs-on: ubuntu-latest
+
+
+    steps:
+
+      - name: Checkout project
+        uses: actions/checkout@v4
+
+
+      - name: Download Tiny3D
+        run: |
+          git clone \
+            --depth 1 \
+            https://github.com/wargio/tiny3D.git \
+            "$RUNNER_TEMP/tiny3D"
+
+
+      - name: Build inside PS3DEV
+        run: |
+
+          docker pull ps3dev/ps3dev:latest
+
+          docker run \
+            --rm \
+            -v "$PWD:/src" \
+            -v "$RUNNER_TEMP/tiny3D:/tiny3D" \
+            -w /src \
+            ps3dev/ps3dev:latest \
+            bash -lc '
+
+              set -e
+
+              export PS3DEV=/usr/local/ps3dev
+
+              export PSL1GHT=$PS3DEV
+
+              export PORTLIBS=$PS3DEV/portlibs/ppu
+
+              export PATH=$PS3DEV/bin:$PS3DEV/ppu/bin:$PS3DEV/spu/bin:$PATH
+
+
+              echo "=============================="
+
+              echo "PS3DEV"
+
+              echo "=============================="
+
+
+              ppu-gcc --version
+
+
+              mkdir -p "$PORTLIBS/include"
+
+              mkdir -p "$PORTLIBS/lib"
+
+
+              echo "=============================="
+
+              echo "BUILD TINY3D"
+
+              echo "=============================="
+
+
+              make \
+                -C /tiny3D/lib \
+                clean || true
+
+
+              make \
+                -C /tiny3D/lib \
+                -j2
+
+
+              make \
+                -C /tiny3D/lib \
+                install
+
+
+              echo "=============================="
+
+              echo "BUILD PORT TEST"
+
+              echo "=============================="
+
+
+              make clean || true
+
+
+              make -j2
+
+
+              echo "=============================="
+
+              echo "BUILD PKG"
+
+              echo "=============================="
+
+
+              make pkg
+
+
+              mkdir -p dist
+
+
+              find . \
+                -maxdepth 1 \
+                -type f \
+                \( \
+                    -name "*.pkg" \
+                    -o \
+                    -name "*.self" \
+                    -o \
+                    -name "*.elf" \
+                \) \
+                -exec cp {} dist/ \;
+
+
+              echo "=============================="
+
+              echo "OUTPUT"
+
+              echo "=============================="
+
+
+              ls -lah dist
+
+            '
+
+
+      - name: Upload PS3 build
+        uses: actions/upload-artifact@v4
+
+        with:
+
+          name: PS3-Port-Test-0.01
+
+          path: dist/
+
+          if-no-files-found: error
