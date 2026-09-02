@@ -2,25 +2,32 @@ name: Build PS3 Port Test
 
 on:
   workflow_dispatch:
-
   push:
     branches:
       - main
       - master
 
-
 jobs:
-
   build:
-
     runs-on: ubuntu-latest
-
+    timeout-minutes: 90
 
     steps:
-
       - name: Checkout project
         uses: actions/checkout@v4
 
+      - name: Clone PS3DEV Docker
+        run: |
+          git clone \
+            --depth 1 \
+            https://github.com/ps3dev/ps3dev-docker.git \
+            "$RUNNER_TEMP/ps3dev-docker"
+
+      - name: Build PS3DEV Docker image
+        run: |
+          docker build \
+            -t ps3dev-local \
+            "$RUNNER_TEMP/ps3dev-docker"
 
       - name: Download Tiny3D
         run: |
@@ -29,126 +36,83 @@ jobs:
             https://github.com/wargio/tiny3D.git \
             "$RUNNER_TEMP/tiny3D"
 
-
-      - name: Build inside PS3DEV
+      - name: Build Tiny3D and project
         run: |
-
-          docker pull ps3dev/ps3dev:latest
-
           docker run \
             --rm \
-            -v "$PWD:/src" \
+            -v "$GITHUB_WORKSPACE:/build" \
             -v "$RUNNER_TEMP/tiny3D:/tiny3D" \
-            -w /src \
-            ps3dev/ps3dev:latest \
+            -w /build \
+            ps3dev-local \
             bash -lc '
 
               set -e
 
               export PS3DEV=/usr/local/ps3dev
-
               export PSL1GHT=$PS3DEV
-
               export PORTLIBS=$PS3DEV/portlibs/ppu
+              export PATH=$PATH:$PS3DEV/bin:$PS3DEV/ppu/bin:$PS3DEV/spu/bin
 
-              export PATH=$PS3DEV/bin:$PS3DEV/ppu/bin:$PS3DEV/spu/bin:$PATH
-
-
-              echo "=============================="
-
-              echo "PS3DEV"
-
-              echo "=============================="
-
+              echo "=========================="
+              echo "VERIFY PS3DEV"
+              echo "=========================="
 
               ppu-gcc --version
 
-
               mkdir -p "$PORTLIBS/include"
-
               mkdir -p "$PORTLIBS/lib"
 
-
-              echo "=============================="
-
+              echo "=========================="
               echo "BUILD TINY3D"
+              echo "=========================="
 
-              echo "=============================="
+              make -C /tiny3D/lib clean || true
+              make -C /tiny3D/lib -j2
+              make -C /tiny3D/lib install
 
+              echo "Tiny3D files:"
+              ls -lh "$PORTLIBS/lib/libtiny3d.a"
+              ls -lh "$PORTLIBS/include/tiny3d.h"
 
-              make \
-                -C /tiny3D/lib \
-                clean || true
+              echo "=========================="
+              echo "BUILD PROJECT"
+              echo "=========================="
 
-
-              make \
-                -C /tiny3D/lib \
-                -j2
-
-
-              make \
-                -C /tiny3D/lib \
-                install
-
-
-              echo "=============================="
-
-              echo "BUILD PORT TEST"
-
-              echo "=============================="
-
+              mkdir -p data include shaders
 
               make clean || true
-
-
               make -j2
 
-
-              echo "=============================="
-
+              echo "=========================="
               echo "BUILD PKG"
-
-              echo "=============================="
-
+              echo "=========================="
 
               make pkg
 
+              echo "=========================="
+              echo "COLLECT"
+              echo "=========================="
 
               mkdir -p dist
 
-
               find . \
-                -maxdepth 1 \
+                -maxdepth 2 \
                 -type f \
                 \( \
-                    -name "*.pkg" \
-                    -o \
-                    -name "*.self" \
-                    -o \
-                    -name "*.elf" \
+                  -name "*.pkg" \
+                  -o -name "*.self" \
+                  -o -name "*.elf" \
                 \) \
-                -exec cp {} dist/ \;
-
-
-              echo "=============================="
-
-              echo "OUTPUT"
-
-              echo "=============================="
-
+                -exec cp -v {} dist/ \;
 
               ls -lah dist
 
+              test -n "$(find dist -type f -name "*.pkg" -print -quit)"
             '
-
 
       - name: Upload PS3 build
         uses: actions/upload-artifact@v4
-
         with:
-
           name: PS3-Port-Test-0.01
-
           path: dist/
-
           if-no-files-found: error
