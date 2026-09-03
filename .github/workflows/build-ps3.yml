@@ -2,117 +2,514 @@ name: Build PS3 Port Test
 
 on:
   workflow_dispatch:
+
   push:
     branches:
       - main
       - master
 
+permissions:
+  contents: read
+
 jobs:
-  build:
+
+  build-ps3:
+
+    name: Build PS3 PKG
+
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+
+    timeout-minutes: 120
+
 
     steps:
+
+      # ============================================================
+      # REPOSITORIO
+      # ============================================================
+
       - name: Checkout project
         uses: actions/checkout@v4
 
-      - name: Clone PS3DEV Docker
+
+      # ============================================================
+      # DIAGNOSTICO
+      # ============================================================
+
+      - name: Show repository structure
+        shell: bash
         run: |
+          echo "======================================"
+          echo "REPOSITORY STRUCTURE"
+          echo "======================================"
+
+          find "$GITHUB_WORKSPACE" \
+            -maxdepth 4 \
+            -type f \
+            | sort
+
+
+      # ============================================================
+      # PS3DEV
+      # ============================================================
+
+      - name: Clone PS3DEV Docker environment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "======================================"
+          echo "CLONE PS3DEV DOCKER"
+          echo "======================================"
+
           git clone \
             --depth 1 \
             https://github.com/ps3dev/ps3dev-docker.git \
             "$RUNNER_TEMP/ps3dev-docker"
 
+
       - name: Build PS3DEV Docker image
+        shell: bash
         run: |
+          set -euo pipefail
+
+          echo "======================================"
+          echo "BUILD PS3DEV IMAGE"
+          echo "======================================"
+
           docker build \
-            -t ps3dev-local \
+            --tag ps3dev-local:latest \
             "$RUNNER_TEMP/ps3dev-docker"
 
+
+      # ============================================================
+      # TINY3D
+      # ============================================================
+
       - name: Download Tiny3D
+        shell: bash
         run: |
+          set -euo pipefail
+
+          echo "======================================"
+          echo "DOWNLOAD TINY3D"
+          echo "======================================"
+
           git clone \
             --depth 1 \
             https://github.com/wargio/tiny3D.git \
             "$RUNNER_TEMP/tiny3D"
 
-      - name: Build Tiny3D and project
+
+      # ============================================================
+      # BUILD
+      # ============================================================
+
+      - name: Build Tiny3D and PS3 project
+        shell: bash
         run: |
+
           docker run \
             --rm \
+            \
             -v "$GITHUB_WORKSPACE:/build" \
             -v "$RUNNER_TEMP/tiny3D:/tiny3D" \
+            \
             -w /build \
-            ps3dev-local \
+            \
+            ps3dev-local:latest \
+            \
             bash -lc '
 
-              set -e
+              set -euo pipefail
+
+
+              # ====================================================
+              # ENVIRONMENT
+              # ====================================================
 
               export PS3DEV=/usr/local/ps3dev
               export PSL1GHT=$PS3DEV
               export PORTLIBS=$PS3DEV/portlibs/ppu
-              export PATH=$PATH:$PS3DEV/bin:$PS3DEV/ppu/bin:$PS3DEV/spu/bin
 
-              echo "=========================="
+              export PATH="$PS3DEV/bin:$PS3DEV/ppu/bin:$PS3DEV/spu/bin:$PATH"
+
+
+              echo ""
+              echo "======================================"
               echo "VERIFY PS3DEV"
-              echo "=========================="
+              echo "======================================"
+
+              echo "PS3DEV=$PS3DEV"
+              echo "PSL1GHT=$PSL1GHT"
+              echo "PORTLIBS=$PORTLIBS"
+
+              echo ""
 
               ppu-gcc --version
 
-              mkdir -p "$PORTLIBS/include"
-              mkdir -p "$PORTLIBS/lib"
 
-              echo "=========================="
+              if [ ! -f "$PSL1GHT/ppu_rules" ]; then
+
+                  echo ""
+                  echo "ERROR:"
+                  echo "ppu_rules not found:"
+                  echo "$PSL1GHT/ppu_rules"
+
+                  exit 1
+
+              fi
+
+
+              mkdir -p \
+                "$PORTLIBS/include" \
+                "$PORTLIBS/lib"
+
+
+              # ====================================================
+              # TINY3D
+              # ====================================================
+
+              echo ""
+              echo "======================================"
               echo "BUILD TINY3D"
-              echo "=========================="
+              echo "======================================"
 
-              make -C /tiny3D/lib clean || true
-              make -C /tiny3D/lib -j2
-              make -C /tiny3D/lib install
+              make \
+                -C /tiny3D/lib \
+                clean || true
 
-              echo "Tiny3D files:"
-              ls -lh "$PORTLIBS/lib/libtiny3d.a"
-              ls -lh "$PORTLIBS/include/tiny3d.h"
 
-              echo "=========================="
-              echo "BUILD PROJECT"
-              echo "=========================="
+              make \
+                -C /tiny3D/lib \
+                -j2
 
-              mkdir -p data include shaders
+
+              echo ""
+              echo "======================================"
+              echo "INSTALL TINY3D"
+              echo "======================================"
+
+              make \
+                -C /tiny3D/lib \
+                install
+
+
+              echo ""
+              echo "Checking Tiny3D..."
+
+              test -f \
+                "$PORTLIBS/lib/libtiny3d.a"
+
+
+              test -f \
+                "$PORTLIBS/include/tiny3d.h"
+
+
+              ls -lh \
+                "$PORTLIBS/lib/libtiny3d.a"
+
+
+              ls -lh \
+                "$PORTLIBS/include/tiny3d.h"
+
+
+              # ====================================================
+              # LOCALIZAR PROJETO
+              # ====================================================
+
+              echo ""
+              echo "======================================"
+              echo "LOCATE PS3 PROJECT"
+              echo "======================================"
+
+              PROJECT_DIR=""
+
+
+              # Primeiro procura um Makefile ao lado de source/main.c.
+
+              while IFS= read -r makefile; do
+
+                  dir="$(dirname "$makefile")"
+
+                  if [ -f "$dir/source/main.c" ]; then
+
+                      PROJECT_DIR="$dir"
+
+                      break
+
+                  fi
+
+              done < <(
+                  find /build \
+                    -maxdepth 5 \
+                    -type f \
+                    -name Makefile \
+                    ! -path "*/.git/*"
+              )
+
+
+              # Fallback: primeiro Makefile encontrado.
+
+              if [ -z "$PROJECT_DIR" ]; then
+
+                  MAKEFILE="$(
+                      find /build \
+                        -maxdepth 5 \
+                        -type f \
+                        -name Makefile \
+                        ! -path "*/.git/*" \
+                        -print \
+                        -quit
+                  )"
+
+
+                  if [ -n "$MAKEFILE" ]; then
+
+                      PROJECT_DIR="$(
+                          dirname "$MAKEFILE"
+                      )"
+
+                  fi
+
+              fi
+
+
+              if [ -z "$PROJECT_DIR" ]; then
+
+                  echo ""
+                  echo "ERROR:"
+                  echo "No Makefile found."
+
+                  echo ""
+                  echo "Repository files:"
+
+                  find /build \
+                    -maxdepth 5 \
+                    -type f \
+                    | sort
+
+                  exit 1
+
+              fi
+
+
+              echo ""
+              echo "Project detected:"
+              echo "$PROJECT_DIR"
+
+
+              cd "$PROJECT_DIR"
+
+
+              echo ""
+              echo "Files in project:"
+
+              find . \
+                -maxdepth 3 \
+                -type f \
+                | sort
+
+
+              # ====================================================
+              # CHECK REQUIRED FILES
+              # ====================================================
+
+              echo ""
+              echo "======================================"
+              echo "CHECK PROJECT"
+              echo "======================================"
+
+
+              if [ ! -f Makefile ]; then
+
+                  echo "ERROR: Makefile missing."
+
+                  exit 1
+
+              fi
+
+
+              if [ ! -f source/main.c ]; then
+
+                  echo "ERROR: source/main.c missing."
+
+                  exit 1
+
+              fi
+
+
+              mkdir -p \
+                data \
+                include \
+                shaders
+
+
+              # ====================================================
+              # COMPILE
+              # ====================================================
+
+              echo ""
+              echo "======================================"
+              echo "CLEAN"
+              echo "======================================"
 
               make clean || true
-              make -j2
 
-              echo "=========================="
+
+              echo ""
+              echo "======================================"
+              echo "BUILD ELF / SELF"
+              echo "======================================"
+
+              make \
+                -j2
+
+
+              echo ""
+              echo "======================================"
+              echo "FILES AFTER BUILD"
+              echo "======================================"
+
+              find . \
+                -maxdepth 3 \
+                -type f \
+                \( \
+                  -name "*.elf" \
+                  -o \
+                  -name "*.self" \
+                  -o \
+                  -name "*.map" \
+                \) \
+                -print
+
+
+              # ====================================================
+              # PKG
+              # ====================================================
+
+              echo ""
+              echo "======================================"
               echo "BUILD PKG"
-              echo "=========================="
+              echo "======================================"
 
               make pkg
 
-              echo "=========================="
-              echo "COLLECT"
-              echo "=========================="
 
-              mkdir -p dist
+              # ====================================================
+              # COLLECT OUTPUT
+              # ====================================================
 
-              find . \
-                -maxdepth 2 \
+              echo ""
+              echo "======================================"
+              echo "COLLECT OUTPUT"
+              echo "======================================"
+
+              rm -rf /build/dist
+
+              mkdir -p /build/dist
+
+
+              find "$PROJECT_DIR" \
+                -maxdepth 3 \
                 -type f \
                 \( \
-                  -name "*.pkg" \
-                  -o -name "*.self" \
-                  -o -name "*.elf" \
+                    -name "*.pkg" \
+                    -o \
+                    -name "*.self" \
+                    -o \
+                    -name "*.elf" \
                 \) \
-                -exec cp -v {} dist/ \;
+                -exec cp -v {} /build/dist/ \;
 
-              ls -lah dist
 
-              test -n "$(find dist -type f -name "*.pkg" -print -quit)"
+              echo ""
+              echo "======================================"
+              echo "BUILD RESULT"
+              echo "======================================"
+
+              ls -lah /build/dist
+
+
+              PKG="$(
+                  find /build/dist \
+                    -maxdepth 1 \
+                    -type f \
+                    -name "*.pkg" \
+                    -print \
+                    -quit
+              )"
+
+
+              if [ -z "$PKG" ]; then
+
+                  echo ""
+                  echo "======================================"
+                  echo "ERROR"
+                  echo "======================================"
+
+                  echo "No PKG was generated."
+
+                  echo ""
+                  echo "All build files:"
+
+                  find "$PROJECT_DIR" \
+                    -maxdepth 4 \
+                    -type f \
+                    | sort
+
+                  exit 1
+
+              fi
+
+
+              echo ""
+              echo "======================================"
+              echo "SUCCESS"
+              echo "======================================"
+
+              echo "PKG generated:"
+              echo "$PKG"
+
             '
+
+
+      # ============================================================
+      # MOSTRAR RESULTADO
+      # ============================================================
+
+      - name: Show build output
+        shell: bash
+        run: |
+          echo "======================================"
+          echo "PS3 BUILD OUTPUT"
+          echo "======================================"
+
+          ls -lah dist
+
+          echo ""
+
+          find dist \
+            -maxdepth 1 \
+            -type f \
+            -print
+
+
+      # ============================================================
+      # ARTIFACT
+      # ============================================================
 
       - name: Upload PS3 build
         uses: actions/upload-artifact@v4
         with:
+
           name: PS3-Port-Test-0.01
-          path: dist/
+
+          path: |
+            dist/*.pkg
+            dist/*.self
+            dist/*.elf
+
           if-no-files-found: error
+
+          retention-days: 14
